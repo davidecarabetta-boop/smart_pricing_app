@@ -1,0 +1,5 @@
+.web/
+__pycache__/
+venv_linux/
+.venv/
+*.pyc
