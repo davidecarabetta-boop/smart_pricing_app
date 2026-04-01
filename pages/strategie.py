@@ -1,5 +1,6 @@
 import reflex as rx
 from ..components.navbar import navbar
+from ..state import State, PriceRecord
 
 
 def strategy_card(title: str, description: str, icon: str, color: str) -> rx.Component:

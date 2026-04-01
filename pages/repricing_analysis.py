@@ -2,6 +2,7 @@ import reflex as rx
 from ..state import State
 from ..components.navbar import navbar
 from ..components.filters import global_filter_bar
+from ..state import State, PriceRecord
 
 
 def analysis_row(item: dict):

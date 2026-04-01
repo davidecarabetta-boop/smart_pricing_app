@@ -1,6 +1,7 @@
 import reflex as rx
 from ..state import State
 from ..components.navbar import navbar
+from ..state import State, PriceRecord
 from ..components.filters import global_filter_bar
 
 def history_row(item):

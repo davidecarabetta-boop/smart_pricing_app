@@ -28,7 +28,6 @@ def section_title(text: str, icon: str):
 
 
 def _competitor_slot_inner(index: int, label: str, current_val, on_change_handler):
-    """Slot interno con handler esplicito."""
     return rx.vstack(
         rx.text(label, size="1", weight="bold", color="#64748B", letter_spacing="0.05em"),
         rx.hstack(
@@ -54,7 +53,6 @@ def _competitor_slot_inner(index: int, label: str, current_val, on_change_handle
 
 
 def competitor_slot(index: int, label: str):
-    """Wrapper che seleziona il setter corretto per indice."""
     slots = [
         (State.preferred_competitors[0], State.set_pref_comp_0),
         (State.preferred_competitors[1], State.set_pref_comp_1),
@@ -84,7 +82,6 @@ def preferred_competitors_panel():
             width="100%",
         ),
         rx.divider(margin_y="1.25rem", color="#F1F5F9"),
-        # Preview selezione attiva
         rx.vstack(
             rx.text("SELEZIONE ATTIVA", size="1", weight="bold", color="#94A3B8", letter_spacing="0.06em"),
             rx.flex(
@@ -114,7 +111,6 @@ def preferred_competitors_panel():
 
 
 def competitor_box_panel():
-    """Configura i 3 box KPI Aggressiveness nella home."""
     return section_card(
         section_title("Box KPI Dashboard", "layout-dashboard"),
         rx.text(
@@ -161,15 +157,12 @@ def competitor_box_panel():
                 ),
                 spacing="1", align_items="start",
             ),
-            columns="3",
-            spacing="4",
-            width="100%",
+            columns="3", spacing="4", width="100%",
         ),
     )
 
 
 def sync_panel():
-    """Pannello sincronizzazione dati."""
     return section_card(
         section_title("Sincronizzazione Dati", "refresh-cw"),
         rx.grid(
@@ -180,27 +173,51 @@ def sync_panel():
             ),
             rx.vstack(
                 rx.text("AZIONE", size="1", weight="bold", color="#64748B", letter_spacing="0.05em"),
-                rx.button(
-                    rx.hstack(
-                        rx.icon(tag="database", size=14),
-                        rx.text("Genera Dati Demo"),
-                        spacing="2", align="center",
+                rx.hstack(
+                    rx.button(
+                        rx.hstack(
+                            rx.icon(tag="refresh-cw", size=14),
+                            rx.text("Sincronizza Prezzi"),
+                            spacing="2", align="center",
+                        ),
+                        on_click=State.sync_prices,
+                        loading=State.is_syncing,
+                        color_scheme="green",
+                        variant="soft",
+                        size="2",
                     ),
-                    on_click=State.import_sensation_data,
-                    loading=State.is_syncing,
-                    color_scheme="blue",
-                    variant="soft",
-                    size="2",
+                    rx.button(
+                        rx.hstack(
+                            rx.icon(tag="database", size=14),
+                            rx.text("Dati Demo"),
+                            spacing="2", align="center",
+                        ),
+                        on_click=State.import_sensation_data,
+                        loading=State.is_syncing,
+                        color_scheme="blue",
+                        variant="soft",
+                        size="2",
+                    ),
+                    spacing="2",
                 ),
                 spacing="1", align_items="start",
             ),
             columns="2", spacing="4", width="100%",
         ),
+        rx.cond(
+            State.is_syncing,
+            rx.vstack(
+                rx.text(State.sync_current_product, size="1", color="#94A3B8"),
+                rx.progress(value=State.sync_progress, max=100, width="100%"),
+                spacing="1",
+                margin_top="1rem",
+                width="100%",
+            ),
+        ),
     )
 
 
 def ga4_panel():
-    """Pannello configurazione GA4."""
     return section_card(
         section_title("Google Analytics 4", "bar-chart-2"),
         rx.grid(
@@ -253,10 +270,13 @@ def settings() -> rx.Component:
         navbar(),
         rx.box(
             rx.vstack(
-                # Intestazione
                 rx.hstack(
                     rx.button(
-                        rx.hstack(rx.icon(tag="arrow-left", size=14), rx.text("Dashboard"), spacing="2", align="center"),
+                        rx.hstack(
+                            rx.icon(tag="arrow-left", size=14),
+                            rx.text("Dashboard"),
+                            spacing="2", align="center",
+                        ),
                         on_click=rx.redirect("/"),
                         variant="ghost", color_scheme="gray", size="2",
                     ),
