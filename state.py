@@ -53,6 +53,13 @@ class State(rx.State):
     is_syncing_ga4: bool = False
 
     # ---------------------------------------------------------------------------
+    # FILTRO DATE
+    # ---------------------------------------------------------------------------
+    start_date: str = (datetime.date.today() - datetime.timedelta(days=30)).isoformat()
+    end_date: str = datetime.date.today().isoformat()
+    compare_mode: bool = False
+
+    # ---------------------------------------------------------------------------
     # DATI IN MEMORIA
     # ---------------------------------------------------------------------------
     _products_raw: List[Dict[str, Any]] = []
@@ -70,6 +77,33 @@ class State(rx.State):
     _selected_price_history: List[Dict[str, Any]] = []
 
     # ---------------------------------------------------------------------------
+    # HELPER: parse date dal filtro
+    # ---------------------------------------------------------------------------
+    def _get_date_range(self) -> tuple:
+        """Ritorna (start, end) come datetime.date dal filtro UI."""
+        try:
+            start = datetime.date.fromisoformat(self.start_date)
+            end = datetime.date.fromisoformat(self.end_date)
+        except (ValueError, TypeError):
+            end = datetime.date.today()
+            start = end - datetime.timedelta(days=30)
+        # Sicurezza: start non può essere dopo end
+        if start > end:
+            start, end = end, start
+        return start, end
+
+    def _get_latest_snapshot_date(self, session, start, end):
+        """Trova l'ultimo snapshot_date disponibile nel range."""
+        result = session.exec(
+            select(func.max(DailySnapshot.snapshot_date))
+            .where(
+                DailySnapshot.snapshot_date >= start,
+                DailySnapshot.snapshot_date <= end,
+            )
+        ).one()
+        return result if result else end
+
+    # ---------------------------------------------------------------------------
     # ON LOAD
     # ---------------------------------------------------------------------------
 
@@ -83,12 +117,14 @@ class State(rx.State):
 
     def _load_data(self):
         with Session(engine) as session:
-            today = datetime.date.today()
+            # ===== USA LE DATE DAL FILTRO =====
+            start, end = self._get_date_range()
+            latest_date = self._get_latest_snapshot_date(session, start, end)
 
             rows = session.exec(
                 select(Product, DailySnapshot)
                 .join(DailySnapshot, DailySnapshot.product_id == Product.id)
-                .where(DailySnapshot.snapshot_date == today)
+                .where(DailySnapshot.snapshot_date == latest_date)
             ).all()
 
             products = []
@@ -98,7 +134,7 @@ class State(rx.State):
                     select(CompetitorOffer)
                     .where(
                         CompetitorOffer.product_id == product.id,
-                        CompetitorOffer.snapshot_date == today,
+                        CompetitorOffer.snapshot_date == latest_date,
                         CompetitorOffer.price >= product.my_price * 0.5,
                     )
                     .order_by(CompetitorOffer.price)
@@ -113,7 +149,7 @@ class State(rx.State):
                     select(CompetitorOffer)
                     .where(
                         CompetitorOffer.product_id == product.id,
-                        CompetitorOffer.snapshot_date == today,
+                        CompetitorOffer.snapshot_date == latest_date,
                         CompetitorOffer.price >= product.my_price * 0.5,
                     )
                     .order_by(CompetitorOffer.price)
@@ -123,7 +159,7 @@ class State(rx.State):
                     select(CompetitorOffer)
                     .where(
                         CompetitorOffer.product_id == product.id,
-                        CompetitorOffer.snapshot_date == today,
+                        CompetitorOffer.snapshot_date == latest_date,
                         CompetitorOffer.price >= product.my_price * 0.5,
                         CompetitorOffer.price != (best_offer.price if best_offer else 0),
                     )
@@ -185,8 +221,7 @@ class State(rx.State):
                 "total_sku_count": total,
             }
 
-            # Grafico temporale
-            cutoff = today - datetime.timedelta(days=29)
+            # ===== GRAFICO: usa start/end dal filtro =====
             daily_rows = session.exec(
                 select(
                     DailySnapshot.snapshot_date,
@@ -194,7 +229,8 @@ class State(rx.State):
                     func.avg(DailySnapshot.my_rank).label("avg_rank"),
                 )
                 .where(
-                    DailySnapshot.snapshot_date >= cutoff,
+                    DailySnapshot.snapshot_date >= start,
+                    DailySnapshot.snapshot_date <= end,
                     DailySnapshot.min_price > 0,
                 )
                 .group_by(DailySnapshot.snapshot_date)
@@ -227,7 +263,9 @@ class State(rx.State):
             return
 
         with Session(engine) as session:
-            today = datetime.date.today()
+            # ===== USA LE DATE DAL FILTRO =====
+            start, end = self._get_date_range()
+            latest_date = self._get_latest_snapshot_date(session, start, end)
 
             product = session.exec(
                 select(Product).where(Product.sku == self.selected_sku)
@@ -241,7 +279,7 @@ class State(rx.State):
                 select(DailySnapshot)
                 .where(
                     DailySnapshot.product_id == product.id,
-                    DailySnapshot.snapshot_date == today,
+                    DailySnapshot.snapshot_date == latest_date,
                 )
             ).first()
 
@@ -274,7 +312,7 @@ class State(rx.State):
                 select(CompetitorOffer)
                 .where(
                     CompetitorOffer.product_id == product.id,
-                    CompetitorOffer.snapshot_date == today,
+                    CompetitorOffer.snapshot_date == latest_date,
                 )
                 .order_by(CompetitorOffer.position)
                 .limit(5)
@@ -295,13 +333,13 @@ class State(rx.State):
                 })
             self._selected_competitors = competitors
 
-            # Storico posizionamento (ultimi 30gg)
-            cutoff = today - datetime.timedelta(days=29)
+            # ===== STORICO: usa start/end dal filtro =====
             history_snaps = session.exec(
                 select(DailySnapshot)
                 .where(
                     DailySnapshot.product_id == product.id,
-                    DailySnapshot.snapshot_date >= cutoff,
+                    DailySnapshot.snapshot_date >= start,
+                    DailySnapshot.snapshot_date <= end,
                 )
                 .order_by(DailySnapshot.snapshot_date)
             ).all()
@@ -310,12 +348,11 @@ class State(rx.State):
                 {
                     "name": s.snapshot_date.strftime("%d/%m"),
                     "pos": s.my_rank,
-                    "score": max(1, 6 - s.my_rank),  # invertito: rank 1 → score 5 (alto)
+                    "score": max(1, 6 - s.my_rank),
                 }
                 for s in history_snaps
             ]
 
-            # Storico prezzi (mio vs min competitor)
             self._selected_price_history = [
                 {
                     "name": s.snapshot_date.strftime("%d/%m"),
@@ -369,7 +406,6 @@ class State(rx.State):
             return "Quasi Allineato"
         return "Competitivo"
 
-    # Alias per compatibilità home.py
     @rx.var
     def price_index(self) -> int:
         return int(self._kpi.get("price_index", 100.0))
@@ -427,7 +463,10 @@ class State(rx.State):
         )
         return f"€{total:.2f}" if total > 0 else "€0.00"
 
-    # Competitor aggressiveness — usa preferred_competitors
+    # ---------------------------------------------------------------------------
+    # COMPETITOR AGGRESSIVENESS — usa le date dal filtro
+    # ---------------------------------------------------------------------------
+
     @rx.var
     def comp_aggr_1(self) -> str:
         prefs = list(self.preferred_competitors)
@@ -476,18 +515,29 @@ class State(rx.State):
     def _calc_comp_aggr(self, comp_name: str) -> str:
         if not comp_name:
             return "N/D"
-        import datetime
-        from sqlmodel import Session, select
-        from database import CompetitorOffer, Product, engine
-        today = datetime.date.today()
-        pairs = []
+
+        # ===== USA LE DATE DAL FILTRO =====
+        start, end = self._get_date_range()
+
         with Session(engine) as session:
+            # Trova l'ultimo snapshot_date per questo competitor nel range
+            latest_date_row = session.exec(
+                select(func.max(CompetitorOffer.snapshot_date))
+                .where(
+                    CompetitorOffer.merchant_name == comp_name,
+                    CompetitorOffer.snapshot_date >= start,
+                    CompetitorOffer.snapshot_date <= end,
+                )
+            ).one()
+            latest_date = latest_date_row if latest_date_row else end
+
+            pairs = []
             offers = session.exec(
                 select(CompetitorOffer, Product)
                 .join(Product, Product.id == CompetitorOffer.product_id)
                 .where(
                     CompetitorOffer.merchant_name == comp_name,
-                    CompetitorOffer.snapshot_date == today,
+                    CompetitorOffer.snapshot_date == latest_date,
                     CompetitorOffer.price > 0,
                     Product.my_price > 0,
                 )
@@ -495,6 +545,7 @@ class State(rx.State):
             for offer, product in offers:
                 if offer.price >= product.my_price * 0.5:
                     pairs.append((product.my_price, offer.price))
+
         if not pairs:
             return "N/D"
         avg_delta = sum((cp - mp) / mp * 100 for mp, cp in pairs) / len(pairs)
@@ -530,7 +581,6 @@ class State(rx.State):
         if active_comps:
             filtered = []
             for p in products:
-                # Trova il prezzo minimo tra i competitor selezionati
                 comp_prices = []
                 best_comp_name = None
                 best_comp_price = None
@@ -550,12 +600,10 @@ class State(rx.State):
                         comp_prices.append((comp_name, price))
 
                 if not comp_prices:
-                    continue  # prodotto non ha nessuno dei competitor selezionati
+                    continue
 
-                # Prendi il più economico tra i selezionati
                 best_comp_name, best_comp_price = min(comp_prices, key=lambda x: x[1])
 
-                # Ricalcola PI rispetto al min dei competitor selezionati
                 if best_comp_price > 0 and p["my_price"] > 0:
                     pi_comp = round((p["my_price"] / best_comp_price) * 100, 1)
                 else:
@@ -621,6 +669,32 @@ class State(rx.State):
     @rx.var
     def competitors(self) -> List[str]:
         return list(self._merchants_raw) if self._merchants_raw else []
+
+    # ---------------------------------------------------------------------------
+    # COMPUTED VARS — DATE
+    # ---------------------------------------------------------------------------
+
+    @rx.var
+    def previous_period_label(self) -> str:
+        try:
+            start = datetime.date.fromisoformat(self.start_date)
+            end = datetime.date.fromisoformat(self.end_date)
+            delta = (end - start).days + 1
+            ps = start - datetime.timedelta(days=delta)
+            pe = start - datetime.timedelta(days=1)
+            return f"Confronto: {ps.strftime('%d %b')} - {pe.strftime('%d %b %Y')}"
+        except Exception:
+            return "Date non valide"
+
+    @rx.var
+    def date_range_label(self) -> str:
+        """Label leggibile per la UI, es. '20 Mar - 02 Apr 2026'."""
+        try:
+            d_from = datetime.date.fromisoformat(self.start_date)
+            d_to = datetime.date.fromisoformat(self.end_date)
+            return f"{d_from.strftime('%d %b')} - {d_to.strftime('%d %b %Y')}"
+        except (ValueError, TypeError):
+            return ""
 
     # ---------------------------------------------------------------------------
     # COMPUTED VARS — DETAILS
@@ -701,7 +775,7 @@ class State(rx.State):
         ]
 
     # ---------------------------------------------------------------------------
-    # EVENTI
+    # EVENTI — FILTRI
     # ---------------------------------------------------------------------------
 
     @rx.event
@@ -721,7 +795,6 @@ class State(rx.State):
 
     @rx.event
     def set_filter_competitor(self, v: str):
-        """Toggle singolo competitor on/off."""
         if v == "Tutti" or v == "":
             self.filter_competitor = []
         elif v in self.filter_competitor:
@@ -732,12 +805,47 @@ class State(rx.State):
 
     @rx.event
     def select_competitor_filter(self, name: str):
-        """Toggle competitor dalla card KPI."""
         if name in self.filter_competitor:
             self.filter_competitor = [c for c in self.filter_competitor if c != name]
         else:
             self.filter_competitor = list(self.filter_competitor) + [name]
         self.page_number = 1
+
+    # ---------------------------------------------------------------------------
+    # EVENTI — DATE (triggerano reload!)
+    # ---------------------------------------------------------------------------
+
+    @rx.event
+    def set_start_date(self, v: str):
+        self.start_date = v
+        self.page_number = 1
+        self._load_data()
+
+    @rx.event
+    def set_end_date(self, v: str):
+        self.end_date = v
+        self.page_number = 1
+        self._load_data()
+
+    @rx.event
+    def set_date_preset(self, days: int):
+        """Preset rapido: setta start/end e ricarica."""
+        today = datetime.date.today()
+        if days == 0:
+            self.start_date = today.isoformat()
+        else:
+            self.start_date = (today - datetime.timedelta(days=days)).isoformat()
+        self.end_date = today.isoformat()
+        self.page_number = 1
+        self._load_data()
+
+    @rx.event
+    def set_compare_mode(self, v: bool):
+        self.compare_mode = v
+
+    # ---------------------------------------------------------------------------
+    # EVENTI — ORDINAMENTO E PAGINAZIONE
+    # ---------------------------------------------------------------------------
 
     @rx.event
     def toggle_sort(self, column: str):
@@ -758,6 +866,10 @@ class State(rx.State):
         if self.page_number < self.total_pages:
             self.page_number += 1
 
+    # ---------------------------------------------------------------------------
+    # EVENTI — NAVIGAZIONE
+    # ---------------------------------------------------------------------------
+
     @rx.event
     def nav_to_brand(self, brand: str):
         self.filter_brand = brand
@@ -769,6 +881,25 @@ class State(rx.State):
         self.selected_sku = sku
         self._load_product_detail()
         return rx.redirect("/dettaglio")
+
+    @rx.event
+    def toggle_brand(self, name: str):
+        self.filter_brand = "Tutti" if name == "Tutti" else name
+        self.page_number = 1
+
+    @rx.event
+    def toggle_competitor(self, name: str):
+        if name == "Tutti" or name == "":
+            self.filter_competitor = []
+        elif name in self.filter_competitor:
+            self.filter_competitor = [c for c in self.filter_competitor if c != name]
+        else:
+            self.filter_competitor = list(self.filter_competitor) + [name]
+        self.page_number = 1
+
+    # ---------------------------------------------------------------------------
+    # EVENTI — COMPETITOR PREFERITI
+    # ---------------------------------------------------------------------------
 
     @rx.event
     def set_comp_box_1(self, v: str): self.comp_box_1 = v
@@ -790,6 +921,10 @@ class State(rx.State):
         updated[index] = "" if value == "__none__" else value
         self.preferred_competitors = updated
 
+    # ---------------------------------------------------------------------------
+    # EVENTI — GA4
+    # ---------------------------------------------------------------------------
+
     @rx.event
     def set_ga4_property_id(self, v: str): self.ga4_property_id = v
 
@@ -805,7 +940,6 @@ class State(rx.State):
 
     @rx.event(background=True)
     async def connect_ga4(self, files: list):
-        """Salva il file JSON delle credenziali GA4."""
         import aiofiles
         async with self:
             self.ga4_status = "Salvataggio credenziali..."
@@ -859,9 +993,12 @@ class State(rx.State):
             async with self:
                 self.is_syncing_ga4 = False
 
+    # ---------------------------------------------------------------------------
+    # EVENTI — SYNC PREZZI
+    # ---------------------------------------------------------------------------
+
     @rx.event(background=True)
     async def sync_prices(self):
-        """Lancia la sync AlphaPosition in background."""
         async with self:
             self.is_syncing = True
             self.sync_status = "Avvio sync AlphaPosition..."
@@ -893,46 +1030,3 @@ class State(rx.State):
     @rx.event
     def import_sensation_data(self):
         return rx.toast("Usa la sync AlphaPosition per caricare dati reali.")
-
-    # ---------------------------------------------------------------------------
-    # VARIABILI E METODI PER filters.py
-    # ---------------------------------------------------------------------------
-    start_date: str = (datetime.date.today() - datetime.timedelta(days=30)).isoformat()
-    end_date: str = datetime.date.today().isoformat()
-    compare_mode: bool = False
-
-    @rx.var
-    def previous_period_label(self) -> str:
-        try:
-            start = datetime.date.fromisoformat(self.start_date)
-            end = datetime.date.fromisoformat(self.end_date)
-            delta = (end - start).days + 1
-            ps = start - datetime.timedelta(days=delta)
-            pe = start - datetime.timedelta(days=1)
-            return f"Confronto: {ps.strftime('%d %b')} - {pe.strftime('%d %b %Y')}"
-        except Exception:
-            return "Date non valide"
-
-    @rx.event
-    def set_start_date(self, v: str): self.start_date = v
-
-    @rx.event
-    def set_end_date(self, v: str): self.end_date = v
-
-    @rx.event
-    def set_compare_mode(self, v: bool): self.compare_mode = v
-
-    @rx.event
-    def toggle_brand(self, name: str):
-        self.filter_brand = "Tutti" if name == "Tutti" else name
-        self.page_number = 1
-
-    @rx.event
-    def toggle_competitor(self, name: str):
-        if name == "Tutti" or name == "":
-            self.filter_competitor = []
-        elif name in self.filter_competitor:
-            self.filter_competitor = [c for c in self.filter_competitor if c != name]
-        else:
-            self.filter_competitor = list(self.filter_competitor) + [name]
-        self.page_number = 1
